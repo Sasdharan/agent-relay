@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test against PostgreSQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: agent_relay
+          POSTGRES_USER: agent_relay
+          POSTGRES_PASSWORD: agent_relay
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agent_relay -d agent_relay"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      RELAY_DATABASE_URL: postgresql+psycopg://agent_relay:agent_relay@127.0.0.1:5432/agent_relay
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.18"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Run tests against PostgreSQL
+        run: uv run pytest -q
+
+  build-and-deploy:
+    name: Build and deploy to kind
+    needs: test
+    if: needs.test.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: agent-relay-agent-relay
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build application image
+        run: docker build --tag "${IMAGE_NAME}:${IMAGE_TAG}" .
+
+      - name: Create kind cluster
+        if: env.ACT != 'true'
+        uses: helm/kind-action@v1.12.0
+        with:
+          cluster_name: agent-relay
+          wait: 120s
+
+      - name: Configure existing kind cluster for act
+        if: env.ACT == 'true'
+        run: |
+          curl --fail --silent --show-error --location https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64 --output /usr/local/bin/kind
+          chmod +x /usr/local/bin/kind
+          curl --fail --silent --show-error --location https://dl.k8s.io/release/v1.37.0/bin/linux/amd64/kubectl --output /usr/local/bin/kubectl
+          chmod +x /usr/local/bin/kubectl
+          kind get clusters
+          kubectl config use-context kind-agent-relay
+          kubectl get nodes
+
+      - name: Load application image into kind
+        run: kind load docker-image "${IMAGE_NAME}:${IMAGE_TAG}" --name agent-relay
+
+      - name: Deploy PostgreSQL
+        run: kubectl apply --filename k8s/postgres.yaml
+
+      - name: Deploy Agent Relay
+        run: sed "s|agent-relay-agent-relay:latest|${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/agent-relay.yaml | kubectl apply --filename -
+
+      - name: Wait for PostgreSQL rollout
+        run: kubectl rollout status deployment/postgres --timeout=180s
+
+      - name: Wait for Agent Relay rollout
+        run: kubectl rollout status deployment/agent-relay --timeout=180s
