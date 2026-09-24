@@ -1,22 +1,23 @@
+# syntax=docker/dockerfile:1.7
 FROM python:3.11-slim
+
+COPY --from=ghcr.io/astral-sh/uv:0.12.18 /uv /uvx /bin/
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy \
-    RELAY_DATABASE_URL=sqlite:////data/agent-relay.db
+    UV_LINK_MODE=copy
 
 WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
-RUN pip install --no-cache-dir uv \
-    && uv sync --frozen --no-dev
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
 
 COPY *.py dashboard.html ./
 
 RUN useradd --create-home --uid 10001 appuser \
-    && mkdir --parents /data \
-    && chown --recursive appuser:appuser /app /data
+    && chown --recursive appuser:appuser /app
 
 USER appuser
 
