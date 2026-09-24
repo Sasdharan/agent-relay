@@ -1,8 +1,8 @@
 # Agent Relay specification
 
-Status: v1 starter. This document defines the protocol and behavior implemented by the local SQLite starter.
+Status: v1. This document defines the protocol and behavior implemented by the PostgreSQL-backed service.
 
-The starter deliberately uses SQLite so it can run with no external service. Students may port the storage layer to PostgreSQL as a later deployment exercise; the HTTP protocol, credential rules, task lifecycle, and delivery guarantees should remain unchanged.
+The service uses PostgreSQL for durable storage. The HTTP protocol, credential rules, task lifecycle, and delivery guarantees are independent of the database deployment.
 
 ## Purpose
 
@@ -15,7 +15,7 @@ V1 supports one recipient and one final result per task. Conversations, streamin
 ## Components and identity
 
 - **Relay API:** authenticates callers and manages registration, task submission, claims, and results.
-- **SQLite (starter):** persists agents, tasks, and delivery attempts. WAL mode and a `BEGIN IMMEDIATE` writer transaction coordinate concurrent claims across API/worker processes. A future student PostgreSQL port can replace this transaction with row locking (for example, `FOR UPDATE SKIP LOCKED`) without changing the protocol.
+- **PostgreSQL:** persists agents, tasks, and delivery attempts. Row locking with `FOR UPDATE SKIP LOCKED` coordinates concurrent claims across API/worker processes.
 - **Agent process:** polls for tasks, executes them locally, and reports results. Several processes may serve the same agent identity.
 - **Dashboard:** displays agents, last-seen times, task states, results, and delivery history through the API.
 

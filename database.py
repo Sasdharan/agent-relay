@@ -1,9 +1,7 @@
-"""SQLite database setup and durable Agent Relay models.
+"""Database setup and durable Agent Relay models.
 
-This module is intentionally the only place that knows about SQLite connection
-pragmas and its writer-lock transaction.  The rest of the application talks to
-the models through :mod:`storage`; replacing this module with a PostgreSQL
-engine and a row-locking claim transaction is the planned student exercise.
+This module owns database engine setup and transaction boundaries. The
+application defaults to PostgreSQL; SQLite remains available for local tests.
 """
 
 from __future__ import annotations
@@ -19,7 +17,11 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, rela
 
 
 def _database_url() -> str:
-    return os.getenv("RELAY_DATABASE_URL") or os.getenv("DATABASE_URL") or "sqlite:///./agent-relay.db"
+    return (
+        os.getenv("RELAY_DATABASE_URL")
+        or os.getenv("DATABASE_URL")
+        or "postgresql+psycopg://agent_relay:agent_relay@postgres:5432/agent_relay"
+    )
 
 
 def positive_int(name: str, default: int) -> int:
@@ -177,19 +179,19 @@ def db_session() -> Generator[Session, None, None]:
 
 @contextmanager
 def immediate_transaction() -> Generator[Session, None, None]:
-    """Run one SQLite writer transaction before selecting or changing work.
+    """Run one transaction for operations that select and change work.
 
-    SQLite does not support PostgreSQL's ``FOR UPDATE SKIP LOCKED``.  A
-    ``BEGIN IMMEDIATE`` writer reservation serializes claims (and recovery or
-    terminal submissions) across API processes, giving each task one active
-    lease.  This is the intentionally isolated seam for a future PostgreSQL
-    implementation.
+    PostgreSQL callers use row locks in the storage queries. SQLite callers
+    retain the serialized writer transaction used by the local test suite.
     """
 
     connection = engine.connect()
     session = Session(bind=connection, expire_on_commit=False, autoflush=True)
     try:
-        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        if _is_sqlite(DATABASE_URL):
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+        else:
+            connection.begin()
         yield session
         session.flush()
         connection.commit()
@@ -210,6 +212,7 @@ def recover_expired_in_session(db: Session, now: datetime) -> int:
             select(Attempt)
             .where(Attempt.outcome == "processing", Attempt.lease_expires_at <= now_db)
             .order_by(Attempt.lease_expires_at, Attempt.id)
+            .with_for_update()
         )
     )
     count = 0
